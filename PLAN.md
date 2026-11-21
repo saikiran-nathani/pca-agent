@@ -165,17 +165,57 @@ Any exploit that scores above zero blocks everything downstream. Do not move on 
 > five stdlib imports, on a ~20 ms process-spawn floor. Import-time side effects now happen once
 > per test, which is how the first cut of this made E10 worse before the capture landed.
 
-#### 1.4 · The agent-facing API — 3–4 h
+#### 1.4 · The agent-facing API — ✅ **done 2026-11-21**
 `verify(patch, repo, test_selector) -> Report`. One call the loop can make. It applies a patch to
 a scratch copy, runs the project's own tests inside the container, and returns a structured
 report. The agent never executes anything any other way.
 
+> Built as `src/pca/sandbox/verify.py`; record in `results/03-verify.md`. It raises
+> `NotContained` outside the container rather than returning a flag, because a caller that
+> ignores a return value is the failure mode being guarded against.
+>
+> **Two signals, and `network_down` is the better one.** `/etc/pca-sandbox` says "this is the
+> image we built", which is how you know the run carries the flags; the interface list *tests*
+> the claim rather than trusting a file we wrote, so running the right image with networking on
+> is still refused. It guards against accident — running a model's patch on the Mac — not
+> against something that already has code execution in the calling process.
+>
+> **Two traps closed in the API rather than left to the caller.** A selector that matches
+> nothing exits 5 with no failures, and "no failures" is what a thin wrapper reads: status
+> `no_tests`, never a pass. And a patch that edits the tests is the cheapest hack there is, so
+> touched test files are restored from the original and the report says so — restored rather
+> than rejected, because a patch that fixes the code *and* guts the test should still have its
+> fix measured honestly. Both halves are tested.
+>
+> Counts come from `--junitxml`, never the exit code: one failure and one pass produce the same
+> status as twenty of each, and a boolean reward is the sparse one GRPO barely moves on.
+> `git apply` runs **without** `--unsafe-paths`, so a diff targeting `../../escaped.txt` comes
+> back `patch_rejected` — tested.
+>
+> **The weaker executor mode is the one the loop uses, and that is not fixable here.**
+> `checks=` keeps the expected value out of the sandbox and cannot be used on a real
+> repository's pytest suite, which is arbitrary Python. Written into the module docstring so
+> nobody later reads "PCA has check mode" as "the loop is covered by it".
+>
+> Two harness defects found on the way, both of which would have stayed quiet. The conftest
+> guard was keyed to the directory, so adding a second test file there broke collection of
+> *that* file; narrowed to the file, plus a check that the file still holds the anchor, since
+> narrowing opens the move-it-elsewhere case. And `run-in-container.sh` never rebuilt a changed
+> image — `docker image inspect` succeeding was the whole condition — which in 1.4 would have
+> turned a correct refusal into a baffling one. It now compares a content stamp of the
+> Dockerfile and entrypoint, stored as an image label.
+
 > **Phase 1 gate.** Every exploit scores zero, under repetition, inside the container · the
 > adversarial suite reports 23 there · `verify()` refuses to run outside a container and says so.
 >
-> Two of three, as of 2026-11-21: the corpus is zero in both modes on both machines, and the
-> container reports **35 ran, 35 passed, nothing failed, nothing skipped** — 23 adversarial
-> plus 12 corpus. 1.4 is what is left.
+> ✅ **All three, 2026-11-21.** The corpus is zero in both modes on both machines · the
+> container reports **47 ran, 47 passed, nothing failed, nothing skipped** — 23 adversarial,
+> 12 corpus, 12 for `verify()` · and the refusal is in `results/03-verify.md` §1, printed from
+> the Mac, where the mistake would actually happen.
+>
+> **Phase 1 is done.** The execution boundary was built, measured against ten exploits it
+> initially lost six of, rebuilt, and wrapped in one call the loop can make. Actual: roughly
+> 18 h against the 16–20 h estimate.
 
 ---
 

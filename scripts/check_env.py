@@ -34,15 +34,16 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The minimum number of test cases `pytest --collect-only` must find: 23 in the
 # adversarial suite, 12 in the exploit corpus (phase 1.2, extended by 1.3 to run
-# both test modes). A number the runner asserts is a gate; the same number
-# written into prose is drift with a date on it, which is why it lives here and
-# not in the README.
+# both test modes), 12 for verify() (phase 1.4, nine of which only run inside
+# the container). A number the runner asserts is a gate; the same number written
+# into prose is drift with a date on it, which is why it lives here and not in
+# the README.
 #
 # A MINIMUM, deliberately, and it checks a different thing from the container
 # gate's EXPECTED_RAN. This one catches a suite that shrank. That one catches a
 # suite that shrank, went red, or skipped -- it can be exact because it runs one
 # known platform, where this script also runs on a Mac whose collection differs.
-MIN_COLLECTED_TESTS = 35
+MIN_COLLECTED_TESTS = 47
 
 # How many checks each machine must actually run. Raise these when you add one.
 DECLARED_CHECKS = {"Darwin": 6, "Linux": 9}
@@ -162,6 +163,8 @@ SANDBOX_INVARIANTS = (
     ("FRAUD_FLAGS", "executor.py", "a flagged fraud is zeroed, not returned as 1.0 (E03)"),
     ("os.fork()", "_runner.py", "one fork per test; the scorer runs no solution (E04, E07)"),
     ("_CTL.clear()", "_runner.py", "the child loses the report path and the other tests (E06)"),
+    ("require_containment", "verify.py", "verify() refuses to run outside the container"),
+    ("--unsafe-paths", "verify.py", "the comment saying git apply is NOT given it, so a patch cannot climb out"),
 )
 
 

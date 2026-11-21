@@ -44,6 +44,7 @@ its own anchor, and fails collection loudly when it has expired.
 
 from __future__ import annotations
 
+import pathlib
 import sys
 
 import pytest
@@ -56,13 +57,41 @@ LINUX_ONLY_TESTS = frozenset({"test_fork_bomb_is_contained"})
 
 # The guard's precondition. It can only demand that a name resolve while the
 # suite holding that name is actually being collected; requiring a match
-# unconditionally would turn a `pytest src/train` run red over a directory it
-# was never asked to look at.
-_GUARDED_SUITE = "src/pca/sandbox"
+# unconditionally would turn a `pytest src/pca/audit` run red over a directory
+# it was never asked to look at.
+#
+# > **Narrowed from `src/pca/sandbox` to the file, 2026-11-21.** Phase 1.4 added
+# > `src/pca/sandbox/tests/test_verify.py` next to the adversarial suite, and
+# > `pytest src/pca/sandbox/tests/test_verify.py` then failed collection with
+# > this guard's error: the directory was being collected, and the fork-bomb
+# > test — which lives in the other file — was not among the items. The guard
+# > was right about its own rule and wrong about its scope.
+# >
+# > Keyed to the file, the rule reads as intended: if the file that defines the
+# > name is collected, the name must resolve. `_guarded_file_exists` closes the
+# > case this narrowing would otherwise open, where MOVING the test to another
+# > file leaves the guard pointing at a path that no longer holds it and
+# > silently matching nothing — the same expiry this file was hardened against
+# > in the first place.
+_GUARDED_SUITE = "src/pca/sandbox/tests/test_adversarial.py"
 
 
 def _guarded_suite_is_collected(items: list[pytest.Item]) -> bool:
     return any(_GUARDED_SUITE in item.nodeid.replace("\\", "/") for item in items)
+
+
+def _guarded_file_holds_the_anchor() -> bool:
+    """Does the file this guard names still contain the name it guards?
+
+    Checked as text rather than by import: the point is to catch the test being moved or
+    renamed, and both of those are true before anything is importable.
+    """
+    path = pathlib.Path(__file__).parent / _GUARDED_SUITE
+    try:
+        source = path.read_text()
+    except OSError:
+        return False
+    return any(name in source for name in LINUX_ONLY_TESTS)
 
 
 def _anchor_name(item: pytest.Item) -> str:
@@ -77,6 +106,17 @@ def _anchor_name(item: pytest.Item) -> str:
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     matched = {_anchor_name(item) for item in items} & LINUX_ONLY_TESTS
+
+    # Unconditional, and before the collection check: if the guarded file no longer holds
+    # the guarded name, every other branch here is reasoning about a path that moved.
+    if not _guarded_file_holds_the_anchor():
+        raise pytest.UsageError(
+            f"conftest.py guards {_GUARDED_SUITE}, which no longer contains any of "
+            f"{{{', '.join(sorted(LINUX_ONLY_TESTS))}}}. The test was moved, renamed or "
+            "deleted, and a guard pointing at the wrong file matches nothing while looking "
+            "exactly like a guard with nothing to do. Point _GUARDED_SUITE at the file that "
+            "holds it now."
+        )
 
     # Anchor check, deliberately before the platform test and not inside it. On
     # Linux the guard is *meant* to do nothing, so an early `return` there would

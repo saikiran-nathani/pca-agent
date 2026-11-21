@@ -16,9 +16,27 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="pca-sandbox:dev"
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "building $IMAGE ..." >&2
-  docker build -q -t "$IMAGE" -f "$REPO/docker/Dockerfile" "$REPO" >/dev/null
+# Rebuild when the image's recipe changes, not only when the image is absent.
+#
+# `docker image inspect` succeeding used to be the whole condition, which meant a
+# Dockerfile edit never took effect until someone deleted the image by hand. That
+# was survivable while the image only held pytest. It stopped being survivable in
+# 1.4: verify() refuses to run unless /etc/pca-sandbox is present, and that file
+# is written by the Dockerfile -- so a stale image turns a correct refusal into a
+# confusing one, and `git apply` would be missing too.
+#
+# A content stamp rather than mtimes: a checkout, a branch switch or a `touch`
+# all move mtimes without changing what gets built, and comparing timestamps
+# across the Docker daemon's clock and the filesystem's is its own small trap.
+if command -v sha256sum >/dev/null 2>&1; then
+  STAMP="$(cat "$REPO/docker/Dockerfile" "$REPO/docker/entrypoint.sh" | sha256sum | cut -c1-16)"
+else
+  STAMP="$(cat "$REPO/docker/Dockerfile" "$REPO/docker/entrypoint.sh" | shasum -a 256 | cut -c1-16)"
+fi
+BUILT="$(docker image inspect -f '{{index .Config.Labels "pca.stamp"}}' "$IMAGE" 2>/dev/null || true)"
+if [ "$STAMP" != "$BUILT" ]; then
+  echo "building $IMAGE (recipe stamp $STAMP) ..." >&2
+  docker build -q -t "$IMAGE" --label "pca.stamp=$STAMP" -f "$REPO/docker/Dockerfile" "$REPO" >/dev/null
 fi
 
 DOCKER_FLAGS=(
@@ -44,7 +62,7 @@ fi
 
 # With no command this is THE PHASE 1 GATE, and a gate asserts a count.
 #
-# 35 tests must RUN -- not "35 passed". The distinction started mattering on
+# 47 tests must RUN -- not "47 passed". The distinction started mattering on
 # 2026-11-21, when phase 1.2 added an exploit corpus that the sandbox does not
 # yet survive. Asserting a PASS count conflates two unrelated questions: did
 # the suite shrink, and did it go red. A gate built on `passed >= N` reports
@@ -54,9 +72,11 @@ fi
 # So: assert the number that RAN, and assert separately that none failed and
 # none were skipped. On macOS the suite reports 1 skipped, because
 # test_fork_bomb_is_contained sizes RLIMIT_NPROC from a /proc that is not
-# there. Inside Linux that case must RUN -- a skip in here means the single
-# test this container exists to make possible did not happen.
-EXPECTED_RAN=35
+# there, and since 1.4 nine more skip with it: verify() refuses to execute a
+# model's patch outside the container, so its tests decline to pretend. Inside
+# Linux all ten must RUN -- a skip in here means a test this container exists to
+# make possible did not happen.
+EXPECTED_RAN=47
 
 # Do NOT let a non-zero exit short-circuit the parse. pytest exits 1 on a test
 # failure, and the old `|| { echo; exit 1; }` threw away every count before
