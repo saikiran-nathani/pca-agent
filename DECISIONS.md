@@ -50,6 +50,71 @@ convention of leaving `LICENSE` untouched. The copyright line reads **Sai Kiran*
 
 ---
 
+# ~~Blocking phase 1.3~~ — answered 2026-11-21
+
+## X1 — Does a flagged run keep its score?
+
+Phase 1.2 measured `E03 always_equal` scoring **1.0 on every one of 25 runs, with
+`eq_override` raised on every one of them**. The detection works. It changes nothing:
+`ExecResult.fraction` is 1.0 and `status` is `pass`, and nothing in the executor consults
+`flags` when deciding either.
+
+`_runner.py` says the reward function must treat `eq_override` as a hard zero. No reward
+function exists yet, so the rule lives in a comment, and 5.3 is twelve weeks away. Until then
+the executor is a component that **knows** a result is fraudulent and returns it as a 1.0.
+
+**Recommendation: the executor zeroes it, not the caller.** A `fraud` field on `ExecResult`
+plus `fraction = 0.0` when it is set, so every future caller inherits the rule instead of
+re-deriving it. The flag stays, because the evidence is worth keeping — what changes is that
+the number stops contradicting it.
+
+**The argument against, and it is real:** the executor currently has one job and reports
+observations without interpreting them, which is why it has survived being copied between
+repositories unchanged. Deciding what a flag *means* is policy, and policy in a primitive is
+how primitives rot. The counter is that returning 1.0 for a result you have flagged as fake is
+itself a policy, and a worse one.
+
+**Blocks:** 1.3 cannot be called done without an answer, since `E03` is one of the six and it
+is the only one process isolation does not fix.
+
+`SK:` **The executor zeroes it.** `FRAUD_FLAGS` in `executor.py`; `ExecResult.fraud` names the
+flag, `fraction` becomes 0.0 and `status` becomes `fraud`. The flag is still raised — the
+evidence was never the problem. E03 now scores 0.000 on 25 runs out of 25 where it scored 1.000
+on 25 out of 25 before. `test_a_flagged_fraud_scores_zero_not_one` holds it.
+
+---
+
+## X2 — Does the child get told the expected answer?
+
+The residual that survives everything else in 1.3 (`results/01-exploit-corpus.md` §7). If each
+test runs in a forked child that receives the full assertion, that child can `os._exit(0)`
+before running it and claim a pass by exit status — and any protocol proving the assertion ran
+is readable by code sharing that child's memory.
+
+**The strong fix: stop sending the expected value in.** The child returns what the solution
+computed; the parent holds the answer and compares. `os._exit(0)` then produces a missing value
+rather than a pass, and forging one means guessing it.
+
+**The cost: tests stop being arbitrary Python.** `run(code, tests)` currently takes any source
+snippet, which is what makes it usable against real repositories in phase 2's `verify()`. The
+strong fix constrains tests to a shape the parent can evaluate — call plus expected value — and
+a project's own pytest suite is not that shape.
+
+**A split is possible** — arbitrary snippets for `verify()` against real repos, the constrained
+form for training rewards, where the task set is ours anyway — at the cost of two execution
+paths, and the one used less often is the one that rots.
+
+**Blocks:** the shape of 1.3's redesign, and therefore 1.4's `verify()` signature.
+
+`SK:` **Both forms, and the split is measured rather than assumed.** `run()` takes `tests=`
+(arbitrary snippets, for `verify()` against a real repository) and `checks=` (call plus expected
+value, for training rewards). E11 `forge_own_result` was written to test the claim: **accepted
+25/25 in snippet mode, blocked 25/25 in check mode**, identically on both machines. The cost —
+two execution paths, and the one used less often rots — is real and unpaid; `test_corpus` runs
+the whole corpus through both, which is the cheapest thing that keeps the second path honest.
+
+---
+
 # Blocking the TUF, whenever you get to it
 
 ## T1 — Reboot, and go headless in the same reboot?

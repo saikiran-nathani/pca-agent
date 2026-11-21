@@ -32,11 +32,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The minimum number of test cases `pytest --collect-only` must find. The
-# adversarial suite alone is 23. A number the runner asserts is a gate; the same
-# number written into prose is drift with a date on it, which is why it lives
-# here and not in the README.
-MIN_COLLECTED_TESTS = 23
+# The minimum number of test cases `pytest --collect-only` must find: 23 in the
+# adversarial suite, 12 in the exploit corpus (phase 1.2, extended by 1.3 to run
+# both test modes). A number the runner asserts is a gate; the same number
+# written into prose is drift with a date on it, which is why it lives here and
+# not in the README.
+#
+# A MINIMUM, deliberately, and it checks a different thing from the container
+# gate's EXPECTED_RAN. This one catches a suite that shrank. That one catches a
+# suite that shrank, went red, or skipped -- it can be exact because it runs one
+# known platform, where this script also runs on a Mac whose collection differs.
+MIN_COLLECTED_TESTS = 35
 
 # How many checks each machine must actually run. Raise these when you add one.
 DECLARED_CHECKS = {"Darwin": 6, "Linux": 9}
@@ -146,20 +152,36 @@ def check_collected_test_count() -> Result:
     )
 
 
-def check_sandbox_reads_a_report_not_an_exit_code() -> Result:
-    """The one design property the agent's safety rests on.
+# Properties of the execution boundary that a refactor must not quietly drop, each
+# paired with the exploit that collects if it does. Grepping source is a crude check
+# and it is the right crudeness here: it fails on the refactor rather than four weeks
+# later on a benchmark, and it costs nothing to run.
+SANDBOX_INVARIANTS = (
+    ("report.json", "executor.py", "scores from a report file, not the exit code (E01)"),
+    ("token", "executor.py", "report carries a token a forgery cannot (E05, E08)"),
+    ("FRAUD_FLAGS", "executor.py", "a flagged fraud is zeroed, not returned as 1.0 (E03)"),
+    ("os.fork()", "_runner.py", "one fork per test; the scorer runs no solution (E04, E07)"),
+    ("_CTL.clear()", "_runner.py", "the child loses the report path and the other tests (E06)"),
+)
 
-    If the executor ever scores from the subprocess exit code, `sys.exit(0)`
-    before the assertions is a passing grade. Asserting it here means a
-    refactor that reintroduces it fails the gate rather than a benchmark.
+
+def check_sandbox_invariants_are_present() -> Result:
+    """The design properties the agent's safety rests on.
+
+    Phase 1.2 measured six of ten exploits scoring 1.0 against the previous design, so
+    these are not hypotheticals: each line names the case that collects when the
+    property goes missing. This check used to assert one of them.
     """
-    src = (ROOT / "src/pca/sandbox/executor.py").read_text()
-    ok = "report.json" in src
+    missing = []
+    for needle, filename, why in SANDBOX_INVARIANTS:
+        src = (ROOT / "src/pca/sandbox" / filename).read_text()
+        if needle not in src:
+            missing.append(f"{filename}: {why}")
+    ok = not missing
     return Result(
-        "sandbox scores from a report file",
+        "sandbox design invariants",
         ok,
-        "executor references ctl/report.json" if ok else "no report.json reference — "
-        "check the executor is not scoring from the exit code",
+        f"{len(SANDBOX_INVARIANTS)} present" if ok else "MISSING — " + "; ".join(missing),
     )
 
 
@@ -225,7 +247,7 @@ COMMON = [
     check_package_imports,
     check_pytest_timeout_is_active,
     check_collected_test_count,
-    check_sandbox_reads_a_report_not_an_exit_code,
+    check_sandbox_invariants_are_present,
 ]
 LINUX_ONLY = [check_cuda_allocates, check_torchvision_matches_torch, check_bf16_supported]
 

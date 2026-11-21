@@ -2,8 +2,9 @@
 
 Exists for one reason: `[tool.pytest.ini_options] testpaths = ["src"]` means a
 bare `pytest` now collects every suite under src/ — src/pca/sandbox/tests (the
-adversarial suite) and src/train/tests (monitor.py's degradation contract).
-src/trainwatch/tests was the third and left with trainwatch in Phase B step 6.
+adversarial suite) and src/pca/audit/tests (the exploit corpus, added by phase
+1.2). The sentence here used to name src/train/tests and src/trainwatch/tests,
+which are ULTRON's and do not exist in this repository; corrected 2026-11-21.
 One case in the sandbox suite must not run on macOS, and skipping it here
 rather than in the test file keeps that file runnable standalone
 (`python src/pca/sandbox/tests/test_adversarial.py`), which it is designed to be —

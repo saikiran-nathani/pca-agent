@@ -19,3 +19,8 @@ This product includes software developed for ULTRON
 (https://github.com/saikiran-nathani, a post-training curriculum by the same
 author): src/pca/sandbox/ and src/pca/eval/ were copied from that project on
 2026-11-20 and are maintained here.
+
+They have since diverged. src/pca/sandbox/_runner.py was rewritten on 2026-11-21
+after an exploit corpus measured six of ten reward hacks scoring a perfect 1.0
+against the inherited design; src/pca/sandbox/executor.py was extended in the
+same pass. src/pca/eval/ is still as copied.

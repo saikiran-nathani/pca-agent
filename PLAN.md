@@ -88,7 +88,7 @@ failure:
   **23 passed and zero skipped**. A run reporting 22 has silently skipped the one case the
   container exists to make possible, and "22 passed" reads exactly like success.
 
-#### 1.2 · The exploit corpus — 10–12 h
+#### 1.2 · The exploit corpus — ✅ **done 2026-11-21**
 Ten short Python "solutions" that must score **zero**:
 
 `sys.exit(0)` before the asserts · `os._exit(0)` · an `AlwaysEqual` object whose `__eq__` always
@@ -103,8 +103,67 @@ explain.
 **Run each under repetition, not once.** Isolation that holds for one unit test and not for a
 loop running thousands of times is not isolation, and an agent repair loop is the second kind.
 
-#### 1.3 · Fix anything accepted — **stop the line** · unknown, and that is the point
+> **Result: six of ten were accepted, 25 times out of 25, on both machines.**
+> Full record in `results/01-exploit-corpus.md`. Built as `src/pca/audit/`, which takes any
+> executor rather than importing this one, so phase 4 can point it at someone else's sandbox
+> without a rewrite.
+>
+> | | |
+> |---|---|
+> | Blocked | E01 `clean_exit` · E02 `hard_exit` · E09 `fake_markers` · E10 `output_flood` |
+> | **Accepted** | **E03 `always_equal` · E04 `patch_compile` · E05 `forge_report` · E06 `steal_tests` · E07 `patch_runner` · E08 `atexit_forge`** |
+>
+> Three root causes, not six bugs: the scorer and the untrusted code share an interpreter (E04,
+> E07) · `report_path` and the test sources are locals of the frame that calls the solution, so
+> removing them from disk and argv does not remove them from reach (E05, E06, E08) · and
+> `assert f(x) == y` is decided by `f(x).__eq__`, which the solution writes (E03).
+>
+> Nothing was flaky. Every verdict was 25/25 — deterministic properties of the design rather
+> than a race, which is worse news and an easier fix.
+>
+> Two things the corpus settled that were not what it was looking for:
+>
+> - **`fs_read_outside_cwd` fires on `import ast`.** The audit hook flags any open outside the
+>   work directory, which is every stdlib source file read to satisfy an import. A correct
+>   solution that imports anything raises the same flag as one reading `/etc/passwd`. Not a
+>   containment hole — a measurement defect, and 5.3 plans to spend that measurement as reward.
+> - **E10 lands in the grader.** `RLIMIT_FSIZE` does not apply to a pipe and `_clip()` truncates
+>   only after `communicate()` has read everything, so 16 MiB of output moved the *parent's*
+>   peak RSS by 49–57 MB. The corpus's pass/fail axis called this case blocked; it is a resource
+>   finding, and under a GRPO rollout it is every sample.
+
+#### 1.3 · Fix anything accepted — ✅ **done 2026-11-21**
 Any exploit that scores above zero blocks everything downstream. Do not move on with a known hole.
+
+> **Result: all ten score zero, 25/25, in both test modes, on both machines.**
+> Full record in `results/02-redesign.md`. `_runner.py` was rewritten; `executor.py` gained a
+> report token, a `fraud` field and a `checks=` form. The inherited 23-case adversarial suite is
+> unchanged and still passes.
+>
+> Three causes, three changes. **One fork per test**, so the process that scores never executes
+> the solution (E04, E07). **Everything compiled before the first fork**, so there is no
+> `compile` left to rebind (E04). **`_CTL.clear()` in the child and the report written last
+> under a token**, so the path, the token and the other tests are out of reach and a forgery is
+> overwritten or rejected (E05, E06, E08). **A flagged fraud scores zero** (E03) — X1.
+>
+> Both secondary findings closed too: the audit hook no longer flags an `import`, and a child's
+> output is captured inside the child. E10's cost to the grader went from **+57 MB to +64 kB**.
+>
+> **The inherited suite went red six times during the rewrite, and every one was a real
+> behaviour change.** `os._exit` skips the flush as well as atexit, so `r.stdout` came back
+> empty. A child killed by a signal was being scored as a failed assertion, so `while True:
+> pass` stopped reporting the containment that had just worked. A solution that will not import
+> was reported as `fail` rather than `error`. That suite was inherited unexamined; this is the
+> first evidence it is load-bearing.
+>
+> **The residual is measured, not asserted.** E11 `forge_own_result` finds the report pipe by
+> fd, writes a forged pass and exits: **accepted 25/25 in snippet mode, blocked 25/25 in check
+> mode.** That is the argument for X2 carrying both forms, as a number rather than a paragraph.
+> `test_snippet_mode_still_accepts_the_residual` fails if it ever stops being true.
+>
+> Cost: a fork and a re-import per test — **~1.2 ms/test** for a trivial solution, ~3.2 ms with
+> five stdlib imports, on a ~20 ms process-spawn floor. Import-time side effects now happen once
+> per test, which is how the first cut of this made E10 worse before the capture landed.
 
 #### 1.4 · The agent-facing API — 3–4 h
 `verify(patch, repo, test_selector) -> Report`. One call the loop can make. It applies a patch to
@@ -113,6 +172,10 @@ report. The agent never executes anything any other way.
 
 > **Phase 1 gate.** Every exploit scores zero, under repetition, inside the container · the
 > adversarial suite reports 23 there · `verify()` refuses to run outside a container and says so.
+>
+> Two of three, as of 2026-11-21: the corpus is zero in both modes on both machines, and the
+> container reports **35 ran, 35 passed, nothing failed, nothing skipped** — 23 adversarial
+> plus 12 corpus. 1.4 is what is left.
 
 ---
 

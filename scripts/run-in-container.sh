@@ -44,34 +44,68 @@ fi
 
 # With no command this is THE PHASE 1 GATE, and a gate asserts a count.
 #
-# 23, not "it passed". On macOS the suite reports 22 passed and 1 skipped,
-# because test_fork_bomb_is_contained sizes RLIMIT_NPROC from a /proc that is
-# not there. Inside Linux that case must RUN. A run that reports 22 here has
-# silently skipped the single test this container exists to make possible, and
-# "22 passed" reads exactly like success.
-EXPECTED=23
-out="$(docker run "${DOCKER_FLAGS[@]}" "$IMAGE" 2>&1)" || { echo "$out"; exit 1; }
+# 35 tests must RUN -- not "35 passed". The distinction started mattering on
+# 2026-11-21, when phase 1.2 added an exploit corpus that the sandbox does not
+# yet survive. Asserting a PASS count conflates two unrelated questions: did
+# the suite shrink, and did it go red. A gate built on `passed >= N` reports
+# success the moment enough other tests pass to cover for a deleted one, and
+# reports the same generic failure whether a case vanished or a hole opened.
+#
+# So: assert the number that RAN, and assert separately that none failed and
+# none were skipped. On macOS the suite reports 1 skipped, because
+# test_fork_bomb_is_contained sizes RLIMIT_NPROC from a /proc that is not
+# there. Inside Linux that case must RUN -- a skip in here means the single
+# test this container exists to make possible did not happen.
+EXPECTED_RAN=35
+
+# Do NOT let a non-zero exit short-circuit the parse. pytest exits 1 on a test
+# failure, and the old `|| { echo; exit 1; }` threw away every count before
+# reading one -- so "the image would not build" and "two exploits were
+# accepted" produced the same silent exit 1. The status is captured and
+# reported alongside the counts instead.
+set +e
+out="$(docker run "${DOCKER_FLAGS[@]}" "$IMAGE" 2>&1)"
+rc=$?
+set -e
 echo "$out"
 
-# grep, not sed with a leading-context pattern. Under -q the summary line is
-# `23 passed in 17.42s` and begins with the number, so any pattern demanding a
+# grep, not sed with a leading-context pattern. The summary line is
+# `26 passed in 17.42s` and begins with the number, so any pattern demanding a
 # non-digit before it matches nothing -- and "could not read a count" is the
 # same dead end as no count at all.
-# `|| true` on both, and the second one is load-bearing. Under `set -euo
-# pipefail` a grep that finds nothing fails the pipeline and kills the script
-# -- and finding no "skipped" is the HEALTHY case here. Without this the gate
-# exits 1 on a perfect run, having asserted nothing, which looks like a test
-# failure and is the script dying before it checks anything.
-passed="$(printf '%s' "$out" | grep -oE '[0-9]+ passed' | tail -1 | cut -d' ' -f1 || true)"
-skipped="$(printf '%s' "$out" | grep -oE '[0-9]+ skipped' | tail -1 | cut -d' ' -f1 || true)"
+# `|| true` on each, and it is load-bearing. Under `set -euo pipefail` a grep
+# that finds nothing fails the pipeline and kills the script -- and finding no
+# "failed" is the HEALTHY case here. Without this the gate exits on a perfect
+# run, having asserted nothing.
+count() { printf '%s' "$out" | grep -oE "[0-9]+ $1" | tail -1 | cut -d' ' -f1 || true; }
+passed="$(count passed)"
+failed="$(count failed)"
+errors="$(count error)"
+skipped="$(count skipped)"
+ran=$(( ${passed:-0} + ${failed:-0} + ${errors:-0} + ${skipped:-0} ))
 
-if [ -z "$passed" ]; then
-  echo "GATE FAILED: could not read a pass count from the container run." >&2
+if [ -z "$passed" ] && [ -z "$failed" ] && [ -z "$errors" ]; then
+  echo "GATE FAILED: no pytest summary in the container output (exit $rc)." >&2
+  echo "             That is an image or entrypoint problem, not a test result." >&2
   exit 2
 fi
-if [ "$passed" -lt "$EXPECTED" ] || [ -n "${skipped:-}" ]; then
-  echo "GATE FAILED: $passed passed${skipped:+, $skipped skipped} -- expected $EXPECTED passed and nothing skipped." >&2
-  echo "             A skip in here means the Linux-only case did not run, which is the whole point of the container." >&2
-  exit 2
+
+status=0
+if [ "$ran" -ne "$EXPECTED_RAN" ]; then
+  echo "GATE FAILED: $ran tests ran, expected $EXPECTED_RAN. A case was added or deleted;" >&2
+  echo "             update EXPECTED_RAN deliberately rather than letting the count drift." >&2
+  status=2
 fi
-echo "gate ok: $passed passed, nothing skipped"
+if [ -n "${skipped:-}" ]; then
+  echo "GATE FAILED: $skipped skipped. In here nothing may skip -- a skip means the" >&2
+  echo "             Linux-only case did not run, which is the whole point of the container." >&2
+  status=2
+fi
+if [ -n "${failed:-}" ] || [ -n "${errors:-}" ]; then
+  echo "GATE FAILED: ${failed:-0} failed, ${errors:-0} errored." >&2
+  echo "             PLAN.md 1.3 — an accepted exploit blocks everything downstream." >&2
+  status=1
+fi
+[ "$status" -ne 0 ] && exit "$status"
+
+echo "gate ok: $ran ran, $passed passed, nothing failed, nothing skipped"

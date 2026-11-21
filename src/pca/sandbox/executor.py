@@ -26,6 +26,7 @@ import contextlib
 import json
 import os
 import resource
+import secrets
 import shutil
 import signal
 import subprocess
@@ -76,6 +77,7 @@ class ExecResult:
     wall_ms: int = 0
     cpu_ms: int = 0
     flags: list[str] = field(default_factory=list)  # 'read_test_file', 'net_attempt', ...
+    fraud: str = ""  # non-empty means the score was zeroed, and names why
 
     @property
     def ok(self) -> bool:
@@ -195,10 +197,27 @@ def _scrubbed_env(workdir: str) -> dict[str, str]:
     }
 
 
+# Flags that mean the result is fraudulent rather than merely suspicious, and what the
+# score becomes when one is present.
+#
+# Phase 1.2 measured E03 `always_equal` scoring 1.0 on 25 runs out of 25 with
+# `eq_override` raised on every one of them. The detection worked; nothing consulted it.
+# _runner.py had said for months that "the reward function must treat eq_override as a
+# hard zero" -- a rule living in a comment, waiting on a reward function twelve weeks
+# away, while the executor returned 1.0 for a result it had already called fake.
+#
+# DECISIONS.md X1 settled it here rather than in the caller, on the grounds that
+# returning 1.0 for a result you have flagged as fraudulent is itself a policy, and a
+# worse one than the primitive declining to. The flag stays -- the evidence is worth
+# keeping. What changes is that the number stops contradicting it.
+FRAUD_FLAGS = ("eq_override",)
+
+
 def run(
     code: str,
-    tests: str | list[str],
+    tests: str | list[str] | None = None,
     *,
+    checks: list[tuple[str, object]] | None = None,
     wall_s: int = DEFAULT_WALL_S,
     cpu_s: int = DEFAULT_CPU_S,
     mem_mb: int = DEFAULT_MEM_MB,
@@ -206,16 +225,38 @@ def run(
     nproc: int | None = None,
     python: str | None = None,
 ) -> ExecResult:
-    """Execute `code` against `tests` under Level 1 isolation.
+    """Execute `code` against `tests` and/or `checks` under Level 1 isolation.
+
+    Two test forms, and the difference between them is a security property rather than
+    a convenience. DECISIONS.md X2 settled on carrying both.
 
     `tests` is a list of independent source snippets, each counted separately so the
     result carries passed/total -- the dense reward. A bare string is treated as one
     test. Each snippet is exec'd with the solution module's namespace in scope, so it
-    can call the solution's functions directly.
+    can call the solution's functions directly. **The child evaluating a snippet is
+    told what passing looks like**, because the assertion is the snippet. It therefore
+    decides its own pass/fail, and a solution willing to forge one message and exit can
+    take that one test. It cannot reach any other test or the report. This form exists
+    because a real repository's pytest suite is arbitrary Python and phase 2's
+    `verify()` has to run it.
+
+    `checks` is a list of `(call_source, expected)`. **The expected value never enters
+    the sandbox.** The child evaluates the call, serialises what the solution returned,
+    and the comparison happens here. `os._exit(0)` then produces a missing value rather
+    than a pass; forging one means computing the right answer, which is the task. Values
+    must be JSON-serialisable, and comparison is on canonical JSON text, so an object
+    with a custom `__eq__` has nothing to override. Use this form for training rewards,
+    where the task set is ours and the shape is free.
+
+    Both may be given; they are scored into one fraction, snippets first.
     """
     if isinstance(tests, str):
         tests = [tests]
-    total = len(tests)
+    specs: list[dict] = [{"k": "snippet", "src": t} for t in (tests or [])]
+    specs += [{"k": "check", "src": c, "expected": e} for c, e in (checks or [])]
+    if not specs:
+        raise ValueError("run() needs at least one of tests= or checks=")
+    total = len(specs)
     python = python or sys.executable
     if nproc is None:
         nproc = default_nproc()
@@ -245,8 +286,16 @@ def run(
 
         payload = os.path.join(ctldir, "payload.json")
         report = os.path.join(ctldir, "report.json")
+
+        # The report is still a file, and a solution that scans /tmp can still find and
+        # overwrite it -- E05 and E08 both did. What it cannot do is produce this token.
+        # It is generated here, travels in a payload that is unlinked before anything is
+        # compiled, and lives from then on only in the runner's scoring process, which
+        # never executes untrusted code; every forked child clears it before the
+        # solution runs. A report without it is a forgery and scores zero.
+        token = secrets.token_hex(16)
         with open(payload, "w") as fh:
-            json.dump({"tests": tests, "report": report, "workdir": workdir}, fh)
+            json.dump({"specs": specs, "report": report, "workdir": workdir, "token": token}, fh)
 
         started = time.monotonic()
         proc = subprocess.Popen(
@@ -288,7 +337,7 @@ def run(
         # Never trust the exit code. sys.exit(0) inside the solution produces a clean
         # 0 while nothing was verified, so scoring reads only the runner's report --
         # which is written to a path the solution was never shown.
-        return _read_report(report, total, out, err, proc.returncode, wall_ms)
+        return _read_report(report, total, out, err, proc.returncode, wall_ms, token)
     finally:
         # Belt and braces: if we left by any path other than a clean communicate()
         # -- an exception in our own code included -- the group must still die, or we
@@ -354,7 +403,7 @@ def _clip(text: str | None, limit: int = 8000) -> str:
 
 
 def _read_report(
-    report: str, total: int, out: str, err: str, rc: int | None, wall_ms: int
+    report: str, total: int, out: str, err: str, rc: int | None, wall_ms: int, token: str
 ) -> ExecResult:
     try:
         with open(report) as fh:
@@ -374,12 +423,54 @@ def _read_report(
             wall_ms=wall_ms,
         )
 
+    # Two things must hold before a well-formed report is believed, and both exist
+    # because phase 1.2 measured solutions writing their own.
+    #
+    # The token proves the report came from the runner's scoring process. A solution
+    # that finds the file in /tmp can overwrite it, and E05 and E08 both did -- but it
+    # was cleared out of every child before the solution ran, so a forgery cannot carry
+    # it. A report without the right token is not a failed run; it is evidence of one.
+    #
+    # rc == 0 closes the other half. To be the only writer, a forger has to stop the
+    # runner from writing -- and the cheapest way to do that is to kill it, which it can
+    # do, same UID. A killed runner cannot also exit 0.
+    if data.get("token") != token:
+        return ExecResult(
+            status="crash",
+            total=total,
+            stdout=_clip(out),
+            stderr=_clip(err),
+            traceback="Report carried no valid token: it was not written by the runner.",
+            exit_code=rc,
+            wall_ms=wall_ms,
+            flags=["forged_report"],
+            fraud="forged_report",
+        )
+    if rc != 0:
+        return ExecResult(
+            status="crash",
+            total=total,
+            stdout=_clip(out),
+            stderr=_clip(err),
+            traceback=f"Runner exited {rc} but a report was present; not trusted. "
+            + _crash_reason(rc, err),
+            exit_code=rc,
+            wall_ms=wall_ms,
+            flags=["runner_died"],
+        )
+
     passed = int(data.get("passed", 0))
     reported_total = int(data.get("total", total)) or total
     flags = list(data.get("flags", []))
     import_error = data.get("import_error") or ""
 
-    if import_error:
+    # A flagged fraud is a zero, not a 1.0 with a note attached. See FRAUD_FLAGS.
+    fraud = next((f for f in FRAUD_FLAGS if f in flags), "")
+
+    if fraud:
+        status = "fraud"
+        passed = 0
+    elif import_error:
         status = "error"
     elif passed == reported_total and reported_total > 0:
         status = "pass"
@@ -390,7 +481,7 @@ def _read_report(
         status=status,
         passed=passed,
         total=reported_total,
-        fraction=passed / reported_total if reported_total else 0.0,
+        fraction=0.0 if fraud else (passed / reported_total if reported_total else 0.0),
         stdout=_clip(out),
         stderr=_clip(err),
         traceback=_clip(import_error or "\n".join(data.get("tracebacks", [])), 4000),
@@ -398,6 +489,7 @@ def _read_report(
         wall_ms=wall_ms,
         cpu_ms=int(data.get("cpu_ms", 0)),
         flags=flags,
+        fraud=fraud,
     )
 
 
