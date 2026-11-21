@@ -1,0 +1,28 @@
+# TUF only. torch is deliberately ABSENT: install it first from the cu128 index,
+# or pip resolves the PyPI CPU wheel over it and bitsandbytes dies at import.
+#
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   uv pip install -r requirements/cuda.txt
+#
+# And then, every single time the venv is rebuilt -- torchvision is NOT
+# protected by the line above and resolves to the PyPI build, whose compiled
+# ops will not load against torch+cu128. unsloth then fails to import with
+# `operator torchvision::nms does not exist`:
+#
+#   uv pip install --reinstall --no-deps \
+#     --index-url https://download.pytorch.org/whl/cu128 "torchvision==0.26.0"
+#
+# scripts/check_env.py asserts the build tag rather than trusting this comment.
+transformers>=4.57
+datasets>=3.0
+accelerate>=1.0
+peft>=0.20
+# trl is DELIBERATELY UNPINNED here, and that is an open decision, not an
+# oversight. On 2026-11-20 the Mac had 1.10.0 and the TUF 0.24.0 -- a major
+# version apart on the library that owns loss masking. Pinning one now, months
+# before any training code exists, writes a number that nothing checks. The pin
+# lands when src/pca/train/ is written, on both machines at once, and
+# scripts/check_env.py asserts they match. See DECISIONS.md, D-train-1.
+trl
+bitsandbytes>=0.50
+unsloth

@@ -1,0 +1,6 @@
+# The agent loop itself. Deliberately small: every dependency here runs on both
+# machines, and none of them is allowed to pull torch.
+httpx>=0.27                # talks to Ollama / llama.cpp over HTTP
+pydantic>=2.8              # tool-call schemas, validated at the boundary
+tree-sitter>=0.23          # syntax-aware context and span selection
+tree-sitter-python>=0.23

@@ -1,0 +1,125 @@
+# --- OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+env/
+.ruff_cache/
+# unsloth codegens patched trainer sources into cwd on import; 3.4 MB, regenerable
+unsloth_compiled_cache/
+.ipynb_checkpoints/
+
+# --- the resolved environment, not the spec (recreate with pip install -r requirements.txt)
+requirements.lock.txt
+
+# --- model weights and quantized artefacts: large, and regenerable from adapter + base
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.ckpt
+outputs/
+adapters/
+merged/
+hf_cache/
+runs/
+
+# --- data is append-only and large; it lives on disk, never in git.
+# The directory shapes are tracked via .gitkeep, the contents never are.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+
+# --- adapters are tens of MB and regenerable from config + data; merged models never.
+checkpoints/*
+!checkpoints/.gitkeep
+
+# --- scratch only, never canonical
+notebooks/*
+!notebooks/.gitkeep
+
+# --- run artefacts
+wandb/
+*.log
+
+# --- trainwatch runtime state ------------------------------------------------
+# STILL LIVE after step 6. The package left this repo; its state did not. The
+# SQLite store, its WAL, heartbeats and hub blobs are machine-local and
+# per-box: the trainer and `scripts/trainwatch serve` share one DB file on the
+# machine doing the training. Never committed.
+var/
+*.db
+*.db-wal
+*.db-shm
+# Anchored to the repo root. This was `heartbeat*`, which is unanchored and so
+# matched at EVERY level -- including src/trainwatch/heartbeat.py, a source
+# module that src/trainwatch/__init__.py imports. That file was therefore never
+# committed, and `import src.trainwatch` failed on any fresh clone. Nothing
+# caught it because nobody had cloned fresh; CI found it on its first run.
+# (Those two modules left in step 6; the anchoring is kept because the failure
+# mode is a property of the pattern, not of the package that exposed it.)
+#
+# It was also redundant: the heartbeat file lives at var/heartbeat, and var/ is
+# already ignored two lines above. Kept anchored anyway, for a heartbeat file
+# written to the repo root by an explicit TRAINWATCH_HEARTBEAT.
+/heartbeat*
+logs/
+.env
+.env.local
+*.key
+
+# --- the dashboard's ignores are gone, deliberately --------------------------
+# dashboard/node_modules/, dashboard/dist/ and dashboard/tsconfig.tsbuildinfo
+# were here until step 6 deleted dashboard/. An ignore for a path that cannot
+# exist hides nothing and tells the next reader this repo still has a Node
+# workspace. It does not: the dashboard, its build and the committed bundle at
+# src/trainwatch/server/static/ all live in Platform now and ship inside the
+# installed trainwatch distribution.
+
+
+# --- tooling caches ---------------------------------------------------------
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# NOT ignored, deliberately:
+#   configs/     -- configs/ IS the lab notebook. A config that is not committed did not happen.
+#   results/     -- written by hand, one markdown file per phase. Your future self reads only this.
+#   data/tasks/  -- eval fixtures are .jsonl and MUST be versioned. A blanket data/**/*.jsonl
+#                   rule would silently swallow them, so the data rules above are scoped to
+#                   raw/ interim/ processed/ only. Verified 2026-09-17:
+#                   `git check-ignore -v data/tasks/dev.jsonl` matches nothing, so this
+#                   scoping does work and always did.
+#
+#                   What did NOT work: there were no fixtures. The directory was empty
+#                   and, having no .gitkeep, was not tracked either -- so a fresh clone
+#                   got no data/tasks/ at all, and BUILDING-ULTRON.md:920's "write ~20
+#                   problems to data/tasks/dev.jsonl" failed on a path that did not
+#                   exist. An audit read this comment, saw "MUST be versioned" next to
+#                   nothing versioned, and concluded the rules above were swallowing
+#                   them. They were not; the fixtures had never been written. A stated
+#                   invariant with no instance of itself is indistinguishable from a
+#                   broken rule, which is why the marker below now exists.
+#
+#                   data/tasks/.gitkeep pins the shape. It does not make the fixtures
+#                   exist -- nothing can -- but a fresh clone now has the directory the
+#                   guide tells you to write into, and this comment is no longer the
+#                   only evidence that it is meant to be tracked.
+#
+# Removed from this list in step 6, because both paths were deleted:
+#   src/trainwatch/server/static/  the BUILT dashboard, committed so the
+#                   training box never needed Node.
+#   dashboard/      the dashboard SOURCE.
+# Both are Platform's now. The built bundle ships inside the installed
+# trainwatch distribution, so the training box still never needs Node.

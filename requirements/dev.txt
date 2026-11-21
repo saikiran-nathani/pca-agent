@@ -1,0 +1,5 @@
+# Development and verification, both machines. Nothing here touches CUDA.
+pytest>=8.0
+pytest-timeout>=2.3        # pyproject's `timeout = 120` is inert without it
+ruff>=0.6
+mypy>=1.11

@@ -1,0 +1,53 @@
+[project]
+name = "pca"
+version = "0.0.0"
+description = "A coding agent built for a model small enough to run on your own machine."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# src-layout: the package is `pca`, so `pca.sandbox.executor` resolves without
+# an editable install. Tests live next to what they test, under src/.
+pythonpath = ["src"]
+testpaths = ["src"]
+addopts = "-q --strict-markers"
+
+# Inherited from ULTRON, where a mutation of a serve command reached a real
+# uvicorn.run and hung for six hours against CI's job limit. pytest-timeout is
+# installed and, without this line, inert. Per-test, so one slow test cannot
+# eat another's budget. The slowest legitimate test here is well under a second.
+timeout = 120
+
+# Scoped to this project's own modules on purpose. A bare
+# `error::DeprecationWarning` fails on other people's code and gets switched
+# off within a week, at which point it protects nothing.
+filterwarnings = ["error::DeprecationWarning:pca.*"]
+
+markers = [
+  "linux_only: needs Linux kernel semantics (rlimits, /proc, process groups)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+  "E501",   # line length is the formatter's job, not a lint error. Carried over
+            # from ULTRON for the same reason, and load-bearing here for a second
+            # one: src/pca/sandbox/ is inherited code that an exploit corpus has
+            # not yet been written against, so it stays byte-identical to the
+            # audited original until phase 1 exists to catch a mistake. Reformatting
+            # audited security code to satisfy a style rule, before the thing that
+            # would notice a regression is built, is backwards.
+]
